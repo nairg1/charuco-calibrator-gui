@@ -153,4 +153,13 @@ The app is set up with portable defaults:
 
 ## License
 
-Add your project license here if you plan to publish the repository broadly.
+This repository is licensed under the PolyForm Noncommercial License 1.0.0.
+
+- Non-commercial use is allowed
+- Commercial use is not allowed without separate permission from the licensor
+- See [LICENSE](/Users/nairg1/Documents/charuco_calibrator_public/LICENSE) for the full terms
+
+Note:
+
+- This is source-available for non-commercial use
+- It is not an OSI open source license because commercial use is restricted
