@@ -1,4 +1,7 @@
-# ChArUco Calibrator GUI
+<h1>
+  <img src="docs/images/logo.jpg" alt="logo" width="60" align="absmiddle">
+     ChArUco Calibrator GUI
+</h1>
 
 Desktop GUI and headless CLI for ChArUco-based camera calibration with support for:
 
