@@ -68,9 +68,7 @@ Required dependencies:
 - optional: `scipy` for least-squares refinement of multi-camera extrinsics
 
 OpenCV compatibility: the code uses the object API (`cv2.aruco.CharucoDetector`, `cv2.aruco.ArucoDetector`,
-`CharucoBoard.matchImagePoints`, `cv2.calibrateCamera`, `cv2.solvePnP`). The old function API
-(`detectMarkers`, `interpolateCornersCharuco`, `calibrateCameraCharuco`, `estimatePoseCharucoBoard`) was removed
-from OpenCV 4.8+ and is not used. Tested with OpenCV 4.10 and 5.0.
+`CharucoBoard.matchImagePoints`, `cv2.calibrateCamera`, `cv2.solvePnP`).Tested with OpenCV 4.10 and 5.0.
 
 Important:
 
@@ -126,13 +124,6 @@ Intrinsics options: `--fix-aspect-ratio`, `--fix-k3/--no-fix-k3` (default on), `
 `--fail-on-warnings` (exit status 2 when quality warnings exist). Run `python3 -m charuco_calibrator <command> -h`
 for the full list.
 
-## Intrinsics Safeguards
-
-- `fix k3` is on by default; fixed aspect ratio, zero tangential distortion and fixed principal point are optional (GUI checkboxes and CLI flags)
-- frames are chosen for pose diversity (board orientation and image coverage) up to `Max Frames`
-- after calibration the log lists, and the JSON stores as `quality_warnings`: fx/fy outside 0.9-1.1, principal point far from the image centre, implausible focal length, too few distinct board orientations, poor corner coverage
-- when fewer than 3 distinct board orientations are seen (for example a static board), the solve is repeated with fixed aspect ratio, centred principal point and zero tangential distortion; the unconstrained matrix is kept as `unconstrained_camera_matrix`
-- per-frame reprojection errors are saved for every used frame
 
 ## Multi-Camera Extrinsics From Several Frame Sets
 
