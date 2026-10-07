@@ -3,11 +3,9 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import traceback
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,140 +13,45 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from .core import (  # noqa: F401  (re-exported for scripts that import from charuco_calibrator.gui)
+    ARUCO_DICTIONARIES,
+    DEFAULT_MAX_FRAME_SETS,
+    DEFAULT_MAX_INTRINSICS_FRAMES,
+    DEPENDENCY_HINT,
+    IMAGE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    BoardSettings,
+    DetectionSummary,
+    FrameSampling,
+    IntrinsicsOptions,
+    board_payload,
+    calibrate_intrinsics,
+    create_board,
+    create_detector_parameters,
+    detect_charuco_in_image,
+    estimate_extrinsics_for_path,
+    estimate_multi_camera_extrinsics,
+    estimate_pose_from_image,
+    get_dictionary,
+    is_video_path,
+    iter_image_paths,
+    load_backend,
+    pose_dict_from_rvec_tvec,
+    read_json,
+    sanitize_name,
+    transform_points,
+    write_json,
+)
+from .cli import format_intrinsics_summary, format_multi_summary
+
 
 APP_TITLE = "ChArUco Intrinsics / Extrinsics Calibrator"
-IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
 APP_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_CALIBRATION_ROOT = APP_DIR / "charuco_calibration_output"
 DEFAULT_INTRINSICS_ROOT = DEFAULT_CALIBRATION_ROOT / "intrinsics"
 DEFAULT_EXTRINSICS_ROOT = DEFAULT_CALIBRATION_ROOT / "extrinsics"
 DEFAULT_MULTI_CAMERA_COUNT = 6
-ARUCO_DICTIONARIES = [
-    "DICT_4X4_50",
-    "DICT_4X4_100",
-    "DICT_5X5_50",
-    "DICT_5X5_100",
-    "DICT_6X6_50",
-    "DICT_6X6_100",
-    "DICT_7X7_50",
-    "DICT_7X7_100",
-    "DICT_ARUCO_ORIGINAL",
-]
-DEPENDENCY_HINT = (
-    "This calibrator needs numpy and opencv-contrib-python.\n\n"
-    "Install them with:\n"
-    "python3 -m pip install -r requirements.txt"
-)
-
-
-@dataclass
-class BoardSettings:
-    squares_x: int
-    squares_y: int
-    square_length: float
-    marker_length: float
-    dictionary_name: str
-    legacy_pattern: bool = False
-
-
-@dataclass
-class DetectionSummary:
-    image_path: str
-    accepted: bool
-    marker_count: int
-    charuco_corner_count: int
-    reason: str
-    image_size: tuple[int, int] | None = None
-    charuco_corners: Any | None = None
-    charuco_ids: Any | None = None
-
-
-def load_backend():
-    try:
-        import numpy as np  # type: ignore
-        import cv2  # type: ignore
-    except Exception as exc:
-        raise RuntimeError(f"{DEPENDENCY_HINT}\n\nImport error: {exc}") from exc
-
-    if not hasattr(cv2, "aruco"):
-        raise RuntimeError(
-            "This OpenCV build does not include the aruco module.\n\n"
-            "Install opencv-contrib-python, not plain opencv-python."
-        )
-
-    return cv2, np
-
-
-def get_dictionary(cv2, dictionary_name: str):
-    aruco = cv2.aruco
-    dict_id = getattr(aruco, dictionary_name, None)
-    if dict_id is None:
-        raise ValueError(f"Unsupported dictionary: {dictionary_name}")
-
-    if hasattr(aruco, "getPredefinedDictionary"):
-        return aruco.getPredefinedDictionary(dict_id)
-    return aruco.Dictionary_get(dict_id)
-
-
-def create_board(cv2, settings: BoardSettings):
-    aruco = cv2.aruco
-    dictionary = get_dictionary(cv2, settings.dictionary_name)
-    if hasattr(aruco, "CharucoBoard") and callable(aruco.CharucoBoard):
-        board = aruco.CharucoBoard(
-            (settings.squares_x, settings.squares_y),
-            settings.square_length,
-            settings.marker_length,
-            dictionary,
-        )
-        if settings.legacy_pattern and hasattr(board, "setLegacyPattern"):
-            board.setLegacyPattern(True)
-        return board
-    if hasattr(aruco, "CharucoBoard_create"):
-        board = aruco.CharucoBoard_create(
-            settings.squares_x,
-            settings.squares_y,
-            settings.square_length,
-            settings.marker_length,
-            dictionary,
-        )
-        if settings.legacy_pattern and hasattr(board, "setLegacyPattern"):
-            board.setLegacyPattern(True)
-        return board
-    raise RuntimeError("This OpenCV ArUco build does not support CharucoBoard creation.")
-
-
-def create_detector_parameters(cv2):
-    aruco = cv2.aruco
-    if hasattr(aruco, "DetectorParameters"):
-        return aruco.DetectorParameters()
-    return aruco.DetectorParameters_create()
-
-
-def iter_image_paths(folder: Path, recursive: bool) -> list[Path]:
-    if not folder.exists():
-        raise FileNotFoundError(f"Folder does not exist: {folder}")
-    if not folder.is_dir():
-        raise NotADirectoryError(f"Not a folder: {folder}")
-
-    iterator = folder.rglob("*") if recursive else folder.iterdir()
-    paths = [path for path in iterator if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS]
-    return sorted(paths)
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-
-
-def sanitize_name(name: str) -> str:
-    clean = "".join(char if char.isalnum() or char in ("_", "-", ".") else "_" for char in name.strip())
-    return clean.strip("_") or "calibration"
+VIDEO_FILETYPES = ("Video files", " ".join(f"*{ext}" for ext in sorted(VIDEO_EXTENSIONS)))
 
 
 def default_intrinsics_output_path(camera_name: str) -> Path:
@@ -160,7 +63,8 @@ def default_extrinsics_output_path(camera_name: str) -> Path:
 
 
 def default_batch_extrinsics_output_path(camera_name: str, input_path: Path) -> Path:
-    return input_path / f"{sanitize_name(camera_name)}_extrinsics_batch.json"
+    folder = input_path.parent if input_path.is_file() else input_path
+    return folder / f"{sanitize_name(camera_name)}_extrinsics_batch.json"
 
 
 def looks_like_camera_folder(folder: Path) -> bool:
@@ -211,338 +115,6 @@ def default_multi_camera_payload(index: int) -> dict[str, str]:
     }
 
 
-def transform_points(np, transform: list[list[float]] | Any, points: list[list[float]]) -> Any:
-    matrix = np.array(transform, dtype=float)
-    homogeneous = np.hstack([np.array(points, dtype=float), np.ones((len(points), 1), dtype=float)])
-    transformed = (matrix @ homogeneous.T).T
-    return transformed[:, :3]
-
-
-def detect_charuco_in_image(
-    image_path: Path,
-    settings: BoardSettings,
-    min_corners: int,
-) -> DetectionSummary:
-    cv2, _np = load_backend()
-    image = cv2.imread(str(image_path))
-    if image is None:
-        return DetectionSummary(
-            image_path=str(image_path),
-            accepted=False,
-            marker_count=0,
-            charuco_corner_count=0,
-            reason="Could not read image",
-        )
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    board = create_board(cv2, settings)
-    dictionary = get_dictionary(cv2, settings.dictionary_name)
-    parameters = create_detector_parameters(cv2)
-
-    corners, ids, _rejected = cv2.aruco.detectMarkers(gray, dictionary, parameters=parameters)
-    marker_count = 0 if ids is None else int(len(ids))
-    if ids is None or marker_count == 0:
-        return DetectionSummary(
-            image_path=str(image_path),
-            accepted=False,
-            marker_count=0,
-            charuco_corner_count=0,
-            reason="No ArUco markers detected",
-            image_size=(gray.shape[1], gray.shape[0]),
-        )
-
-    interpolated = cv2.aruco.interpolateCornersCharuco(corners, ids, gray, board)
-    if len(interpolated) == 3:
-        _retval, charuco_corners, charuco_ids = interpolated
-    else:
-        _retval, charuco_corners, charuco_ids, _ = interpolated
-
-    charuco_count = 0 if charuco_ids is None else int(len(charuco_ids))
-    if charuco_ids is None or charuco_corners is None or charuco_count < min_corners:
-        return DetectionSummary(
-            image_path=str(image_path),
-            accepted=False,
-            marker_count=marker_count,
-            charuco_corner_count=charuco_count,
-            reason=f"Only {charuco_count} ChArUco corners found",
-            image_size=(gray.shape[1], gray.shape[0]),
-        )
-
-    return DetectionSummary(
-        image_path=str(image_path),
-        accepted=True,
-        marker_count=marker_count,
-        charuco_corner_count=charuco_count,
-        reason="Accepted",
-        image_size=(gray.shape[1], gray.shape[0]),
-        charuco_corners=charuco_corners,
-        charuco_ids=charuco_ids,
-    )
-
-
-def pose_dict_from_rvec_tvec(cv2, np, rvec, tvec) -> dict[str, Any]:
-    rotation_matrix, _ = cv2.Rodrigues(rvec)
-    transform = np.eye(4, dtype=float)
-    transform[:3, :3] = rotation_matrix
-    transform[:3, 3] = tvec.reshape(3)
-    inverse = np.linalg.inv(transform)
-    return {
-        "rvec": [float(value) for value in rvec.reshape(-1)],
-        "tvec": [float(value) for value in tvec.reshape(-1)],
-        "T_board_to_camera": [[float(value) for value in row] for row in transform.tolist()],
-        "T_camera_to_board": [[float(value) for value in row] for row in inverse.tolist()],
-    }
-
-
-def calibrate_intrinsics(
-    image_folder: Path,
-    camera_name: str,
-    board_settings: BoardSettings,
-    min_corners: int,
-    recursive: bool,
-) -> dict[str, Any]:
-    cv2, _np = load_backend()
-    image_paths = iter_image_paths(image_folder, recursive)
-    if not image_paths:
-        raise RuntimeError(f"No supported image files found in {image_folder}")
-
-    accepted_detections: list[DetectionSummary] = []
-    rejected_detections: list[DetectionSummary] = []
-    image_size = None
-
-    for image_path in image_paths:
-        detection = detect_charuco_in_image(image_path, board_settings, min_corners)
-        if detection.image_size and image_size is None:
-            image_size = detection.image_size
-        if detection.accepted:
-            accepted_detections.append(detection)
-        else:
-            rejected_detections.append(detection)
-
-    if len(accepted_detections) < 3:
-        raise RuntimeError(
-            "Need at least 3 accepted ChArUco frames for intrinsics calibration.\n"
-            f"Accepted: {len(accepted_detections)} / {len(image_paths)}"
-        )
-
-    board = create_board(cv2, board_settings)
-    charuco_corners = [item.charuco_corners for item in accepted_detections]
-    charuco_ids = [item.charuco_ids for item in accepted_detections]
-
-    result = cv2.aruco.calibrateCameraCharuco(
-        charuco_corners,
-        charuco_ids,
-        board,
-        image_size,
-        None,
-        None,
-    )
-    reprojection_error, camera_matrix, distortion_coeffs, rvecs, tvecs = result[:5]
-
-    return {
-        "camera_name": camera_name,
-        "mode": "intrinsics",
-        "board": {
-            "squares_x": board_settings.squares_x,
-            "squares_y": board_settings.squares_y,
-            "square_length": board_settings.square_length,
-            "marker_length": board_settings.marker_length,
-            "dictionary_name": board_settings.dictionary_name,
-            "legacy_pattern": board_settings.legacy_pattern,
-        },
-        "image_size": {"width": image_size[0], "height": image_size[1]},
-        "reprojection_error": float(reprojection_error),
-        "camera_matrix": camera_matrix.tolist(),
-        "distortion_coefficients": distortion_coeffs.reshape(-1).tolist(),
-        "accepted_frame_count": len(accepted_detections),
-        "rejected_frame_count": len(rejected_detections),
-        "accepted_frames": [
-            {
-                "image_path": item.image_path,
-                "marker_count": item.marker_count,
-                "charuco_corner_count": item.charuco_corner_count,
-            }
-            for item in accepted_detections
-        ],
-        "rejected_frames": [
-            {
-                "image_path": item.image_path,
-                "reason": item.reason,
-                "marker_count": item.marker_count,
-                "charuco_corner_count": item.charuco_corner_count,
-            }
-            for item in rejected_detections
-        ],
-        "view_poses": [
-            {
-                "image_path": accepted_detections[index].image_path,
-                "rvec": [float(value) for value in rvec.reshape(-1)],
-                "tvec": [float(value) for value in tvec.reshape(-1)],
-            }
-            for index, (rvec, tvec) in enumerate(zip(rvecs, tvecs))
-        ],
-    }
-
-
-def estimate_pose_from_image(
-    image_path: Path,
-    intrinsics_payload: dict[str, Any],
-    board_settings: BoardSettings,
-    min_corners: int,
-) -> dict[str, Any]:
-    cv2, np = load_backend()
-    detection = detect_charuco_in_image(image_path, board_settings, min_corners)
-    if not detection.accepted:
-        raise RuntimeError(f"{image_path.name}: {detection.reason}")
-
-    camera_matrix = np.array(intrinsics_payload["camera_matrix"], dtype=float)
-    distortion_coeffs = np.array(intrinsics_payload["distortion_coefficients"], dtype=float).reshape(-1, 1)
-    board = create_board(cv2, board_settings)
-
-    try:
-        ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
-            detection.charuco_corners,
-            detection.charuco_ids,
-            board,
-            camera_matrix,
-            distortion_coeffs,
-            None,
-            None,
-        )
-    except TypeError:
-        rvec = np.zeros((3, 1), dtype=float)
-        tvec = np.zeros((3, 1), dtype=float)
-        ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
-            detection.charuco_corners,
-            detection.charuco_ids,
-            board,
-            camera_matrix,
-            distortion_coeffs,
-            rvec,
-            tvec,
-            False,
-        )
-
-    if not ok:
-        raise RuntimeError(f"{image_path.name}: pose estimation failed")
-
-    payload = pose_dict_from_rvec_tvec(cv2, np, rvec, tvec)
-    payload.update(
-        {
-            "image_path": str(image_path),
-            "marker_count": detection.marker_count,
-            "charuco_corner_count": detection.charuco_corner_count,
-        }
-    )
-    return payload
-
-
-def estimate_extrinsics_for_path(
-    input_path: Path,
-    camera_name: str,
-    intrinsics_payload: dict[str, Any],
-    board_settings: BoardSettings,
-    min_corners: int,
-    recursive: bool,
-) -> dict[str, Any]:
-    if input_path.is_file():
-        poses = [estimate_pose_from_image(input_path, intrinsics_payload, board_settings, min_corners)]
-    else:
-        image_paths = iter_image_paths(input_path, recursive)
-        if not image_paths:
-            raise RuntimeError(f"No supported image files found in {input_path}")
-        poses = []
-        failures = []
-        for image_path in image_paths:
-            try:
-                poses.append(estimate_pose_from_image(image_path, intrinsics_payload, board_settings, min_corners))
-            except Exception as exc:
-                failures.append({"image_path": str(image_path), "reason": str(exc)})
-
-        if not poses:
-            raise RuntimeError("No valid ChArUco poses could be estimated from the selected images.")
-
-        return {
-            "camera_name": camera_name,
-            "mode": "extrinsics_batch",
-            "intrinsics_source": intrinsics_payload.get("camera_name"),
-            "estimated_pose_count": len(poses),
-            "failed_pose_count": len(failures),
-            "poses": poses,
-            "failed_images": failures,
-        }
-
-    return {
-        "camera_name": camera_name,
-        "mode": "extrinsics_single",
-        "intrinsics_source": intrinsics_payload.get("camera_name"),
-        "pose": poses[0],
-    }
-
-
-def estimate_multi_camera_extrinsics(
-    camera_entries: list[dict[str, str]],
-    board_settings: BoardSettings,
-    min_corners: int,
-    reference_camera: str | None,
-) -> dict[str, Any]:
-    cv2, np = load_backend()
-    active_entries = [entry for entry in camera_entries if entry["camera_name"].strip()]
-    if len(active_entries) < 2:
-        raise RuntimeError("Provide at least two cameras for multi-camera extrinsics.")
-
-    per_camera = []
-    for entry in active_entries:
-        intrinsics_payload = read_json(Path(entry["intrinsics_path"]))
-        pose = estimate_pose_from_image(
-            Path(entry["image_path"]),
-            intrinsics_payload,
-            board_settings,
-            min_corners,
-        )
-        per_camera.append(
-            {
-                "camera_name": entry["camera_name"].strip(),
-                "image_path": entry["image_path"],
-                "intrinsics_path": entry["intrinsics_path"],
-                **pose,
-            }
-        )
-
-    if reference_camera:
-        reference = next((item for item in per_camera if item["camera_name"] == reference_camera), None)
-        if reference is None:
-            raise RuntimeError(f"Reference camera not found: {reference_camera}")
-    else:
-        reference = per_camera[0]
-
-    reference_to_board = np.array(reference["T_camera_to_board"], dtype=float)
-    reference_name = reference["camera_name"]
-
-    for item in per_camera:
-        board_to_camera = np.array(item["T_board_to_camera"], dtype=float)
-        camera_to_board = np.array(item["T_camera_to_board"], dtype=float)
-        camera_to_reference = np.linalg.inv(reference_to_board) @ camera_to_board
-        reference_to_camera = board_to_camera @ reference_to_board
-        item["T_camera_to_reference"] = camera_to_reference.tolist()
-        item["T_reference_to_camera"] = reference_to_camera.tolist()
-        item["reference_camera"] = reference_name
-
-    return {
-        "mode": "multi_camera_extrinsics",
-        "reference_camera": reference_name,
-        "board": {
-            "squares_x": board_settings.squares_x,
-            "squares_y": board_settings.squares_y,
-            "square_length": board_settings.square_length,
-            "marker_length": board_settings.marker_length,
-            "dictionary_name": board_settings.dictionary_name,
-            "legacy_pattern": board_settings.legacy_pattern,
-        },
-        "cameras": per_camera,
-    }
-
-
 class MultiCameraRow:
     def __init__(self, parent, index: int, payload: dict[str, str] | None = None):
         defaults = default_multi_camera_payload(index)
@@ -568,8 +140,11 @@ class MultiCameraRow:
             row=0, column=3, padx=4, pady=4, sticky="ew"
         )
         ttk.Entry(self.frame, textvariable=self.image_var).grid(row=0, column=4, padx=4, pady=4, sticky="ew")
-        ttk.Button(self.frame, text="Image", command=self._browse_image).grid(
+        ttk.Button(self.frame, text="Image / Video", command=self._browse_image).grid(
             row=0, column=5, padx=4, pady=4, sticky="ew"
+        )
+        ttk.Button(self.frame, text="Folder", command=self._browse_folder).grid(
+            row=0, column=6, padx=4, pady=4, sticky="ew"
         )
 
     def _browse_intrinsics(self):
@@ -582,9 +157,14 @@ class MultiCameraRow:
 
     def _browse_image(self):
         path = filedialog.askopenfilename(
-            title="Choose synchronized ChArUco image",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All files", "*.*")],
+            title="Choose synchronized ChArUco image or video",
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), VIDEO_FILETYPES, ("All files", "*.*")],
         )
+        if path:
+            self.image_var.set(path)
+
+    def _browse_folder(self):
+        path = filedialog.askdirectory(title="Choose folder of synchronized ChArUco images")
         if path:
             self.image_var.set(path)
 
@@ -705,6 +285,13 @@ class CharucoCalibratorApp:
         self.intr_output = tk.StringVar(value="")
         self.intr_min_corners = tk.IntVar(value=12)
         self.intr_recursive = tk.BooleanVar(value=False)
+        self.intr_every = tk.IntVar(value=1)
+        self.intr_max_frames = tk.IntVar(value=DEFAULT_MAX_INTRINSICS_FRAMES)
+        self.intr_fix_aspect = tk.BooleanVar(value=False)
+        self.intr_fix_k3 = tk.BooleanVar(value=True)
+        self.intr_zero_tangential = tk.BooleanVar(value=False)
+        self.intr_fix_principal_point = tk.BooleanVar(value=False)
+        self.intr_auto_constrain = tk.BooleanVar(value=True)
 
         form = ttk.Frame(tab)
         form.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -713,10 +300,15 @@ class CharucoCalibratorApp:
         ttk.Label(form, text="Camera Name").grid(row=0, column=0, padx=4, pady=4, sticky="w")
         ttk.Entry(form, textvariable=self.intr_camera_name).grid(row=0, column=1, padx=4, pady=4, sticky="ew")
 
-        ttk.Label(form, text="Frame Folder").grid(row=1, column=0, padx=4, pady=4, sticky="w")
+        ttk.Label(form, text="Frame Folder / Video").grid(row=1, column=0, padx=4, pady=4, sticky="w")
         ttk.Entry(form, textvariable=self.intr_folder).grid(row=1, column=1, padx=4, pady=4, sticky="ew")
-        ttk.Button(form, text="Browse", command=self._browse_intrinsics_folder).grid(
-            row=1, column=2, padx=4, pady=4, sticky="ew"
+        source_buttons = ttk.Frame(form)
+        source_buttons.grid(row=1, column=2, padx=4, pady=4, sticky="ew")
+        ttk.Button(source_buttons, text="Folder", command=self._browse_intrinsics_folder).grid(
+            row=0, column=0, padx=(0, 4), sticky="ew"
+        )
+        ttk.Button(source_buttons, text="Video", command=self._browse_intrinsics_video).grid(
+            row=0, column=1, sticky="ew"
         )
 
         ttk.Label(form, text="Output JSON").grid(row=2, column=0, padx=4, pady=4, sticky="w")
@@ -731,11 +323,31 @@ class CharucoCalibratorApp:
             row=3, column=2, padx=4, pady=4, sticky="w"
         )
 
+        sampling_row = ttk.Frame(form)
+        sampling_row.grid(row=4, column=0, columnspan=3, padx=4, pady=4, sticky="w")
+        ttk.Label(sampling_row, text="Use Every N Frames").grid(row=0, column=0, padx=(0, 4), sticky="w")
+        ttk.Entry(sampling_row, textvariable=self.intr_every, width=8).grid(row=0, column=1, padx=(0, 16), sticky="w")
+        ttk.Label(sampling_row, text="Max Frames (pose-diverse, 0 = all)").grid(row=0, column=2, padx=(0, 4), sticky="w")
+        ttk.Entry(sampling_row, textvariable=self.intr_max_frames, width=8).grid(row=0, column=3, sticky="w")
+
+        flags_row = ttk.Frame(form)
+        flags_row.grid(row=5, column=0, columnspan=3, padx=4, pady=4, sticky="w")
+        for column, (text, variable) in enumerate(
+            [
+                ("Fix Aspect Ratio", self.intr_fix_aspect),
+                ("Fix k3", self.intr_fix_k3),
+                ("Zero Tangential", self.intr_zero_tangential),
+                ("Fix Principal Point", self.intr_fix_principal_point),
+                ("Auto-Constrain Degenerate Sets", self.intr_auto_constrain),
+            ]
+        ):
+            ttk.Checkbutton(flags_row, text=text, variable=variable).grid(row=0, column=column, padx=(0, 12), sticky="w")
+
         ttk.Button(form, text="Run Intrinsics Calibration", command=self.run_intrinsics).grid(
-            row=4, column=0, columnspan=3, padx=4, pady=8, sticky="ew"
+            row=6, column=0, columnspan=3, padx=4, pady=8, sticky="ew"
         )
         ttk.Button(form, text="Run All Camera Folders", command=self.run_all_intrinsics).grid(
-            row=5, column=0, columnspan=3, padx=4, pady=(0, 8), sticky="ew"
+            row=7, column=0, columnspan=3, padx=4, pady=(0, 8), sticky="ew"
         )
 
         self.intr_log = ScrolledText(tab, wrap="word", font=("Courier", 11))
@@ -753,6 +365,7 @@ class CharucoCalibratorApp:
         self.ext_output = tk.StringVar(value="")
         self.ext_min_corners = tk.IntVar(value=8)
         self.ext_recursive = tk.BooleanVar(value=False)
+        self.ext_every = tk.IntVar(value=1)
 
         form = ttk.Frame(tab)
         form.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -767,7 +380,7 @@ class CharucoCalibratorApp:
             row=1, column=2, padx=4, pady=4, sticky="ew"
         )
 
-        ttk.Label(form, text="Image Or Folder").grid(row=2, column=0, padx=4, pady=4, sticky="w")
+        ttk.Label(form, text="Image, Folder Or Video").grid(row=2, column=0, padx=4, pady=4, sticky="w")
         ttk.Entry(form, textvariable=self.ext_input).grid(row=2, column=1, padx=4, pady=4, sticky="ew")
         input_buttons = ttk.Frame(form)
         input_buttons.grid(row=2, column=2, padx=4, pady=4, sticky="ew")
@@ -775,7 +388,10 @@ class CharucoCalibratorApp:
             row=0, column=0, padx=(0, 4), sticky="ew"
         )
         ttk.Button(input_buttons, text="Folder", command=self._browse_extrinsics_folder).grid(
-            row=0, column=1, sticky="ew"
+            row=0, column=1, padx=(0, 4), sticky="ew"
+        )
+        ttk.Button(input_buttons, text="Video", command=self._browse_extrinsics_video).grid(
+            row=0, column=2, sticky="ew"
         )
 
         ttk.Label(form, text="Output JSON").grid(row=3, column=0, padx=4, pady=4, sticky="w")
@@ -789,9 +405,11 @@ class CharucoCalibratorApp:
         ttk.Checkbutton(form, text="Search Recursively", variable=self.ext_recursive).grid(
             row=4, column=2, padx=4, pady=4, sticky="w"
         )
+        ttk.Label(form, text="Use Every N Frames").grid(row=5, column=0, padx=4, pady=4, sticky="w")
+        ttk.Entry(form, textvariable=self.ext_every, width=10).grid(row=5, column=1, padx=4, pady=4, sticky="w")
 
         ttk.Button(form, text="Run Pose / Extrinsics Estimation", command=self.run_extrinsics).grid(
-            row=5, column=0, columnspan=3, padx=4, pady=8, sticky="ew"
+            row=6, column=0, columnspan=3, padx=4, pady=8, sticky="ew"
         )
 
         self.ext_log = ScrolledText(tab, wrap="word", font=("Courier", 11))
@@ -806,6 +424,9 @@ class CharucoCalibratorApp:
         self.multi_output = tk.StringVar(value="")
         self.multi_reference = tk.StringVar(value="cam1")
         self.multi_min_corners = tk.IntVar(value=8)
+        self.multi_every = tk.IntVar(value=1)
+        self.multi_max_frame_sets = tk.IntVar(value=DEFAULT_MAX_FRAME_SETS)
+        self.multi_bundle_adjust = tk.BooleanVar(value=True)
 
         form = ttk.Frame(tab)
         form.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -829,14 +450,25 @@ class CharucoCalibratorApp:
         ttk.Button(form, text="Run Multi-Camera Extrinsics", command=self.run_multi_camera).grid(
             row=1, column=3, padx=4, pady=4, sticky="ew"
         )
+        ttk.Label(form, text="Use Every N Frames").grid(row=2, column=0, padx=4, pady=4, sticky="w")
+        ttk.Entry(form, textvariable=self.multi_every, width=10).grid(row=2, column=1, padx=4, pady=4, sticky="w")
+        ttk.Label(form, text="Max Frame Sets").grid(row=2, column=2, padx=4, pady=4, sticky="w")
+        ttk.Entry(form, textvariable=self.multi_max_frame_sets, width=10).grid(row=2, column=3, padx=4, pady=4, sticky="w")
+        ttk.Checkbutton(form, text="Bundle Adjustment (needs scipy)", variable=self.multi_bundle_adjust).grid(
+            row=2, column=4, columnspan=3, padx=4, pady=4, sticky="w"
+        )
 
-        rows_frame = ttk.LabelFrame(tab, text="One synchronized ChArUco image per camera")
+        rows_frame = ttk.LabelFrame(tab, text="Synchronized ChArUco input per camera")
         rows_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
         rows_frame.columnconfigure(0, weight=1)
 
         ttk.Label(
             rows_frame,
-            text="Set the camera count, then point each enabled row at that camera's intrinsics JSON and one synchronized ChArUco image.",
+            text=(
+                "Set the camera count, then point each enabled row at that camera's intrinsics JSON and one "
+                "synchronized image, a folder of synchronized images (matched by file name) or a synchronized "
+                "video (matched by frame index)."
+            ),
         ).grid(row=0, column=0, padx=4, pady=(4, 8), sticky="w")
 
         self.multi_rows_container = ttk.Frame(rows_frame)
@@ -942,9 +574,26 @@ class CharucoCalibratorApp:
         cleaned = self.ext_output.get().strip()
         if cleaned:
             return Path(cleaned)
-        if input_path.is_dir():
+        if input_path.is_dir() or is_video_path(input_path):
             return default_batch_extrinsics_output_path(self.ext_camera_name.get(), input_path)
         return default_extrinsics_output_path(self.ext_camera_name.get())
+
+    def _intrinsics_options(self) -> IntrinsicsOptions:
+        return IntrinsicsOptions(
+            fix_aspect_ratio=bool(self.intr_fix_aspect.get()),
+            fix_k3=bool(self.intr_fix_k3.get()),
+            zero_tangential=bool(self.intr_zero_tangential.get()),
+            fix_principal_point=bool(self.intr_fix_principal_point.get()),
+            max_frames=int(self.intr_max_frames.get()),
+            auto_constrain=bool(self.intr_auto_constrain.get()),
+        )
+
+    @staticmethod
+    def _sampling(every_var: tk.IntVar) -> FrameSampling:
+        every = int(every_var.get())
+        if every < 1:
+            raise ValueError("Use Every N Frames must be at least 1.")
+        return FrameSampling(every=every)
 
     def _resolve_multi_output_path(self) -> Path:
         cleaned = self.multi_output.get().strip()
@@ -985,6 +634,16 @@ class CharucoCalibratorApp:
             self.intr_folder.set(path)
             self.intr_output.set(str(default_intrinsics_output_path(self.intr_camera_name.get())))
 
+    def _browse_intrinsics_video(self):
+        path = filedialog.askopenfilename(
+            title="Choose ChArUco calibration video",
+            filetypes=[VIDEO_FILETYPES, ("All files", "*.*")],
+        )
+        if path:
+            self.intr_folder.set(path)
+            self.intr_camera_name.set(sanitize_name(Path(path).stem))
+            self.intr_output.set(str(default_intrinsics_output_path(self.intr_camera_name.get())))
+
     def _browse_intrinsics_output(self):
         path = filedialog.asksaveasfilename(
             title="Save intrinsics JSON",
@@ -1013,6 +672,15 @@ class CharucoCalibratorApp:
 
     def _browse_extrinsics_folder(self):
         path = filedialog.askdirectory(title="Choose ChArUco image folder")
+        if path:
+            self.ext_input.set(path)
+            self.ext_output.set(str(default_batch_extrinsics_output_path(self.ext_camera_name.get(), Path(path))))
+
+    def _browse_extrinsics_video(self):
+        path = filedialog.askopenfilename(
+            title="Choose ChArUco video",
+            filetypes=[VIDEO_FILETYPES, ("All files", "*.*")],
+        )
         if path:
             self.ext_input.set(path)
             self.ext_output.set(str(default_batch_extrinsics_output_path(self.ext_camera_name.get(), Path(path))))
@@ -1059,22 +727,20 @@ class CharucoCalibratorApp:
                 board_settings=board_settings,
                 min_corners=min_corners,
                 recursive=bool(self.intr_recursive.get()),
+                options=self._intrinsics_options(),
+                sampling=self._sampling(self.intr_every),
+                progress=self.set_status,
             )
             write_json(output_path, payload)
 
-            lines = [
-                f"Intrinsics calibration complete for {camera_name}",
-                f"Saved: {output_path}",
-                f"Accepted frames: {payload['accepted_frame_count']}",
-                f"Rejected frames: {payload['rejected_frame_count']}",
-                f"Reprojection error: {payload['reprojection_error']:.6f}",
-                "",
-                "Camera matrix:",
-                json.dumps(payload["camera_matrix"], indent=2),
-                "",
-                "Distortion coefficients:",
-                json.dumps(payload["distortion_coefficients"], indent=2),
-            ]
+            lines = format_intrinsics_summary(payload, output_path)
+            lines.extend(
+                [
+                    "",
+                    "Camera matrix:",
+                    json.dumps(payload["camera_matrix"], indent=2),
+                ]
+            )
             if payload["rejected_frames"]:
                 lines.extend(["", "Rejected frames:"])
                 lines.extend(
@@ -1084,7 +750,8 @@ class CharucoCalibratorApp:
 
             self.write_log(self.intr_log, "\n".join(lines))
             self.ext_intrinsics.set(str(output_path))
-            self.set_status(f"Intrinsics saved to {output_path}")
+            warning_note = f" ({len(payload['quality_warnings'])} quality warnings)" if payload["quality_warnings"] else ""
+            self.set_status(f"Intrinsics saved to {output_path}{warning_note}")
         except Exception as exc:
             self._handle_error(self.intr_log, "Intrinsics calibration failed", exc)
 
@@ -1137,6 +804,8 @@ class CharucoCalibratorApp:
                     board_settings=board_settings,
                     min_corners=min_corners,
                     recursive=recursive,
+                    options=self._intrinsics_options(),
+                    sampling=self._sampling(self.intr_every),
                 )
                 write_json(camera_output_path, payload)
                 results[camera_name] = payload
@@ -1148,6 +817,7 @@ class CharucoCalibratorApp:
                         f"  accepted: {payload['accepted_frame_count']}",
                         f"  rejected: {payload['rejected_frame_count']}",
                         f"  reprojection error: {payload['reprojection_error']:.6f}",
+                        *(f"  WARNING: {message}" for message in payload["quality_warnings"]),
                         "",
                     ]
                 )
@@ -1201,6 +871,7 @@ class CharucoCalibratorApp:
                 board_settings=board_settings,
                 min_corners=min_corners,
                 recursive=bool(self.ext_recursive.get()),
+                sampling=self._sampling(self.ext_every),
             )
             write_json(output_path, payload)
 
@@ -1214,6 +885,7 @@ class CharucoCalibratorApp:
                     [
                         f"Image: {payload['pose']['image_path']}",
                         f"ChArUco corners: {payload['pose']['charuco_corner_count']}",
+                        f"Reprojection error: {payload['pose']['reprojection_error']:.3f} px",
                         "",
                         "Board to camera transform:",
                         json.dumps(payload["pose"]["T_board_to_camera"], indent=2),
@@ -1254,7 +926,8 @@ class CharucoCalibratorApp:
                     continue
                 if not payload["intrinsics_path"] or not payload["image_path"]:
                     raise ValueError(
-                        f"{payload['camera_name']}: both intrinsics JSON and synchronized image are required."
+                        f"{payload['camera_name']}: both intrinsics JSON and a synchronized image, folder or video "
+                        "are required."
                     )
                 camera_entries.append(payload)
 
@@ -1264,16 +937,14 @@ class CharucoCalibratorApp:
                 board_settings=board_settings,
                 min_corners=int(self.multi_min_corners.get()),
                 reference_camera=self.multi_reference.get().strip() or None,
+                sampling=self._sampling(self.multi_every),
+                max_frame_sets=int(self.multi_max_frame_sets.get()),
+                bundle_adjust=bool(self.multi_bundle_adjust.get()),
+                progress=self.set_status,
             )
             write_json(output_path, payload)
 
-            lines = [
-                f"Multi-camera extrinsics complete",
-                f"Saved: {output_path}",
-                f"Reference camera: {payload['reference_camera']}",
-                f"Cameras solved: {len(payload['cameras'])}",
-                "",
-            ]
+            lines = format_multi_summary(payload, output_path) + [""]
             for item in payload["cameras"]:
                 lines.extend(
                     [
@@ -1632,18 +1303,7 @@ class CharucoCalibratorApp:
         messagebox.showerror(title, details)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=APP_TITLE)
-    parser.add_argument("--self-check", action="store_true", help="Exit after a lightweight import/syntax check.")
-    return parser.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
-    if args.self_check:
-        print("Self check OK")
-        return 0
-
+def run_gui() -> int:
     root = tk.Tk()
     style = ttk.Style(root)
     if "clam" in style.theme_names():
@@ -1653,6 +1313,12 @@ def main() -> int:
     app.set_status("Ready. Set your board parameters, then run calibration.")
     root.mainloop()
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    from .cli import main as cli_main
+
+    return cli_main(argv)
 
 
 if __name__ == "__main__":
